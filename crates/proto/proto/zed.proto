@@ -480,7 +480,9 @@ message Envelope {
     GitCreateArchiveCheckpointResponse git_create_archive_checkpoint_response = 445;
     GitRestoreArchiveCheckpoint git_restore_archive_checkpoint = 446;
     GetCommitData get_commit_data = 447;
-    GetCommitDataResponse get_commit_data_response = 448; // current max
+    GetCommitDataResponse get_commit_data_response = 448;
+
+    ClaudeCodeIdeSelectionChanged claude_code_ide_selection_changed = 449; // current max
   }
 
   reserved 87 to 88;
@@ -574,4 +576,16 @@ message SpawnKernelResponse {
 message KillKernel {
   string kernel_id = 1;
   uint64 project_id = 2;
+}
+
+message ClaudeCodeIdeSelectionChanged {
+  uint64 project_id = 1;
+  string file_path = 2;
+  string file_url = 3;
+  string text = 4;
+  uint32 start_line = 5;
+  uint32 start_character = 6;
+  uint32 end_line = 7;
+  uint32 end_character = 8;
+  bool is_empty = 9;
 }

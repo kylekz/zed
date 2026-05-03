@@ -58,6 +58,8 @@ pub struct HeadlessProject {
     pub dap_store: Entity<DapStore>,
     pub breakpoint_store: Entity<BreakpointStore>,
     pub agent_server_store: Entity<AgentServerStore>,
+    pub claude_code_ide_server:
+        Option<Entity<claude_code_ide_server::ClaudeCodeIdeServer>>,
     pub context_server_store: Entity<ContextServerStore>,
     pub settings_observer: Entity<SettingsObserver>,
     pub next_entry_id: Arc<AtomicUsize>,
@@ -251,6 +253,48 @@ impl HeadlessProject {
             context_server_store
         });
 
+        let claude_code_ide_server = match claude_code_ide_server::ClaudeCodeIdeServer::try_spawn(
+            Vec::new(),
+            &mut *cx,
+        ) {
+            Ok(entity) => Some(entity),
+            Err(error) => {
+                log::debug!("claude-code-ide remote server not started: {error}");
+                None
+            }
+        };
+
+        cx.subscribe(&worktree_store, {
+            let server = claude_code_ide_server.clone();
+            move |this, worktree_store, event, cx| {
+                if matches!(
+                    event,
+                    project::worktree_store::WorktreeStoreEvent::WorktreeAdded(_)
+                        | project::worktree_store::WorktreeStoreEvent::WorktreeRemoved(_, _)
+                        | project::worktree_store::WorktreeStoreEvent::WorktreeReleased(_, _)
+                )
+                    && let Some(server) = server.as_ref()
+                {
+                    let folders: Vec<String> = worktree_store
+                        .read(cx)
+                        .visible_worktrees(cx)
+                        .map(|worktree| {
+                            worktree
+                                .read(cx)
+                                .abs_path()
+                                .to_string_lossy()
+                                .into_owned()
+                        })
+                        .collect();
+                    server.update(cx, |server, cx| {
+                        server.update_workspace_folders(folders, cx);
+                    });
+                }
+                let _ = this;
+            }
+        })
+        .detach();
+
         cx.subscribe(&lsp_store, Self::on_lsp_store_event).detach();
         language_extension::init(
             language_extension::LspAccess::ViaLspStore(lsp_store.clone()),
@@ -310,6 +354,7 @@ impl HeadlessProject {
         session.add_entity_request_handler(Self::handle_download_file_by_path);
 
         session.add_entity_message_handler(Self::handle_find_search_candidates_cancel);
+        session.add_entity_message_handler(Self::handle_claude_code_ide_selection_changed);
         session.add_entity_request_handler(BufferStore::handle_update_buffer);
         session.add_entity_message_handler(BufferStore::handle_close_buffer);
 
@@ -350,6 +395,7 @@ impl HeadlessProject {
             dap_store,
             breakpoint_store,
             agent_server_store,
+            claude_code_ide_server,
             context_server_store,
             languages,
             extensions,
@@ -1214,6 +1260,39 @@ impl HeadlessProject {
     ) -> Result<proto::Ack> {
         log::debug!("Received ping from client");
         Ok(proto::Ack {})
+    }
+
+    async fn handle_claude_code_ide_selection_changed(
+        this: Entity<Self>,
+        envelope: TypedEnvelope<proto::ClaudeCodeIdeSelectionChanged>,
+        mut cx: AsyncApp,
+    ) -> Result<()> {
+        let payload = envelope.payload;
+        this.update(&mut cx, |this, cx| {
+            let Some(server) = this.claude_code_ide_server.as_ref() else {
+                return;
+            };
+            let selection = claude_code_ide_server::SelectionPayload {
+                text: payload.text,
+                file_path: payload.file_path,
+                file_url: payload.file_url,
+                selection: claude_code_ide_server::SelectionRange {
+                    start: claude_code_ide_server::Position {
+                        line: payload.start_line,
+                        character: payload.start_character,
+                    },
+                    end: claude_code_ide_server::Position {
+                        line: payload.end_line,
+                        character: payload.end_character,
+                    },
+                    is_empty: payload.is_empty,
+                },
+            };
+            server
+                .read(cx)
+                .notify_selection_changed(selection, cx);
+        });
+        Ok(())
     }
 
     async fn handle_get_processes(

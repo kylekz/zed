@@ -216,6 +216,7 @@ pub struct Project {
     languages: Arc<LanguageRegistry>,
     dap_store: Entity<DapStore>,
     agent_server_store: Entity<AgentServerStore>,
+    claude_code_ide_server: Option<Entity<claude_code_ide_server::ClaudeCodeIdeServer>>,
 
     bookmark_store: Entity<BookmarkStore>,
     breakpoint_store: Entity<BreakpointStore>,
@@ -1307,6 +1308,17 @@ impl Project {
 
             cx.subscribe(&lsp_store, Self::on_lsp_store_event).detach();
 
+            let claude_code_ide_server = match claude_code_ide_server::ClaudeCodeIdeServer::try_spawn(
+                Vec::new(),
+                &mut *cx,
+            ) {
+                Ok(entity) => Some(entity),
+                Err(error) => {
+                    log::debug!("claude-code-ide local server not started: {error}");
+                    None
+                }
+            };
+
             Self {
                 buffer_ordered_messages_tx: tx,
                 collaborators: Default::default(),
@@ -1333,6 +1345,7 @@ impl Project {
                 breakpoint_store,
                 dap_store,
                 agent_server_store,
+                claude_code_ide_server,
 
                 buffers_needing_diff: Default::default(),
                 git_diff_debouncer: DebouncedDelay::new(),
@@ -1548,6 +1561,7 @@ impl Project {
                 client_state: ProjectClientState::Local,
                 git_store,
                 agent_server_store,
+                claude_code_ide_server: None,
                 client_subscriptions: Vec::new(),
                 _subscriptions: vec![
                     cx.on_release(Self::release),
@@ -1866,6 +1880,7 @@ impl Project {
                 dap_store: dap_store.clone(),
                 git_store: git_store.clone(),
                 agent_server_store,
+                claude_code_ide_server: None,
                 buffers_needing_diff: Default::default(),
                 git_diff_debouncer: DebouncedDelay::new(),
                 terminals: Terminals {
@@ -2200,6 +2215,13 @@ impl Project {
     #[inline]
     pub fn remote_client(&self) -> Option<Entity<RemoteClient>> {
         self.remote_client.clone()
+    }
+
+    #[inline]
+    pub fn claude_code_ide_server(
+        &self,
+    ) -> Option<&Entity<claude_code_ide_server::ClaudeCodeIdeServer>> {
+        self.claude_code_ide_server.as_ref()
     }
 
     #[inline]
@@ -3745,13 +3767,16 @@ impl Project {
                 self.on_worktree_added(worktree, cx);
                 cx.emit(Event::WorktreeAdded(worktree.read(cx).id()));
                 self.emit_group_key_changed_if_needed(cx);
+                self.refresh_claude_code_ide_workspace_folders(cx);
             }
             WorktreeStoreEvent::WorktreeRemoved(_, id) => {
                 cx.emit(Event::WorktreeRemoved(*id));
                 self.emit_group_key_changed_if_needed(cx);
+                self.refresh_claude_code_ide_workspace_folders(cx);
             }
             WorktreeStoreEvent::WorktreeReleased(_, id) => {
                 self.on_worktree_released(*id, cx);
+                self.refresh_claude_code_ide_workspace_folders(cx);
             }
             WorktreeStoreEvent::WorktreeOrderChanged => cx.emit(Event::WorktreeOrderChanged),
             WorktreeStoreEvent::WorktreeUpdateSent(_) => {}
@@ -3778,6 +3803,19 @@ impl Project {
         if remotely_created_models.retain_count > 0 {
             remotely_created_models.worktrees.push(worktree.clone())
         }
+    }
+
+    fn refresh_claude_code_ide_workspace_folders(&self, cx: &mut Context<Self>) {
+        let Some(server) = self.claude_code_ide_server.clone() else {
+            return;
+        };
+        let folders: Vec<String> = self
+            .visible_worktrees(cx)
+            .map(|worktree| worktree.read(cx).abs_path().to_string_lossy().into_owned())
+            .collect();
+        server.update(cx, |server, cx| {
+            server.update_workspace_folders(folders, cx);
+        });
     }
 
     fn on_worktree_released(&mut self, id_to_remove: WorktreeId, cx: &mut Context<Self>) {

@@ -50,6 +50,11 @@ impl Drop for GlobalTokio {
 pub struct Tokio {}
 
 impl Tokio {
+    /// Returns whether the Tokio runtime has been initialized.
+    pub fn is_initialized(cx: &App) -> bool {
+        cx.has_global::<GlobalTokio>()
+    }
+
     /// Spawns the given future on Tokio's thread pool, and returns it via a GPUI task
     /// Note that the Tokio task will be cancelled if the GPUI task is dropped
     pub fn spawn<C, Fut, R>(cx: &C, f: Fut) -> Task<Result<R, JoinError>>

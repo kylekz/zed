@@ -1,0 +1,27 @@
+[package]
+name = "claude_code_ide"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+license = "GPL-3.0-or-later"
+
+[lints]
+workspace = true
+
+[lib]
+path = "src/claude_code_ide.rs"
+doctest = false
+
+[dependencies]
+anyhow.workspace = true
+claude_code_ide_server.workspace = true
+collections.workspace = true
+editor.workspace = true
+gpui.workspace = true
+language.workspace = true
+log.workspace = true
+project.workspace = true
+proto.workspace = true
+text.workspace = true
+url.workspace = true
+util.workspace = true

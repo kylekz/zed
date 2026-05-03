@@ -25,6 +25,7 @@ test-support = ["fs/test-support"]
 anyhow.workspace = true
 async-channel.workspace = true
 askpass.workspace = true
+claude_code_ide_server.workspace = true
 clap.workspace = true
 client.workspace = true
 collections.workspace = true
