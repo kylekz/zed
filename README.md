@@ -7,7 +7,7 @@ Welcome to Zed, a high-performance, multiplayer code editor from the creators of
 
 ### Fork
 
-This is a fork that reimplements the Claude Code VSCode extension into Zed. I don't know Rust, I haven't read any of the code. No compiled binaries are provided, you must build from source.
+This is a fork that reimplements the Claude Code VSCode extension into Zed. I don't know Rust, I haven't read any of the code.
 
 Current functionality includes:
 
@@ -17,11 +17,13 @@ Current functionality includes:
 - `diagnostics_changed` notification (debounced over a 500 ms window)
 - Terminal env injection: `CLAUDE_CODE_SSE_PORT` is set in Zed-spawned terminals (local and WSL/SSH) so `claude` connects without scanning lockfiles
 
-Planned:
+Missing:
 
 - Mutating tools (`openFile`, `saveDocument`)
 - Diff-tab tools (`openDiff`, `closeAllDiffTabs`, `close_tab`)
 - Stale-lockfile cleanup on startup
+
+No binaries are provided, you must build from source. For WSL users, there's `script/build-fork.ps1` that will build Zed, then build the WSL remote server. You can override the WSL distro name by setting the `$Distro` variable, defaulting to `Ubuntu`.
 
 ---
 
