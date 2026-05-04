@@ -2933,9 +2933,11 @@ dependencies = [
  "log",
  "project",
  "proto",
+ "serde_json",
  "text",
  "url",
  "util",
+ "workspace",
 ]
 
 [[package]]
@@ -14680,6 +14682,7 @@ dependencies = [
  "thiserror 2.0.17",
  "toml 0.8.23",
  "unindent",
+ "url",
  "util",
  "uuid",
  "watch",

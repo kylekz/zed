@@ -376,11 +376,15 @@ impl Project {
         let env_task =
             self.resolve_directory_environment(&env_shell, path.clone(), remote_client.clone(), cx);
 
+        let claude_code_ide_port = self.claude_code_ide_port(cx);
         let lang_registry = self.languages.clone();
         cx.spawn(async move |project, cx| {
             let shell_kind = ShellKind::new(&shell, path_style.is_windows());
             let mut env = env_task.await.unwrap_or_default();
             env.extend(settings.env);
+            if let Some(port) = claude_code_ide_port {
+                env.insert("CLAUDE_CODE_SSE_PORT".to_string(), port.to_string());
+            }
 
             let activation_script = maybe!(async {
                 for toolchain in toolchains {

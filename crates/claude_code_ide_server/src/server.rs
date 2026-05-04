@@ -1,7 +1,14 @@
 use crate::mcp_stubs;
-use crate::protocol::{JsonRpcNotification, JsonRpcRequest, SelectionPayload};
+use crate::protocol::{
+    JsonRpcNotification, JsonRpcRequest, ToolResult, error_response, ok_response,
+};
+use crate::protocol::{AtMentionPayload, DiagnosticsChangedPayload, SelectionPayload};
 use anyhow::{Context as _, Result, anyhow, bail};
-use futures::{SinkExt as _, StreamExt as _};
+use futures::SinkExt as _;
+use futures::StreamExt as _;
+use futures::channel::{mpsc as fut_mpsc, oneshot};
+use serde::Deserialize;
+use serde_json::Value;
 use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{Mutex, mpsc};
@@ -16,6 +23,15 @@ const AUTH_HEADER: &str = "x-claude-code-ide-authorization";
 /// accept loop can swap it as connections come and go, while other tasks (like
 /// `notify_selection_changed`) push into whatever sender is current.
 pub type OutboundSender = Arc<Mutex<Option<mpsc::UnboundedSender<Message>>>>;
+
+/// Bridge envelope from the WS reader (tokio-side) to the foreground tool-call
+/// loop. The loop runs the dispatcher under `&mut App` and sends the result
+/// back via `responder`.
+pub struct PendingToolCall {
+    pub tool_name: String,
+    pub arguments: Value,
+    pub responder: oneshot::Sender<ToolResult>,
+}
 
 /// Picks a port in [10000, 65535] and binds a TCP listener synchronously.
 /// Retries up to 50 times before giving up. Returns the bound listener (in
@@ -40,6 +56,7 @@ pub async fn run(
     listener: TcpListener,
     auth_token: Arc<String>,
     outbound: OutboundSender,
+    tool_call_tx: fut_mpsc::UnboundedSender<PendingToolCall>,
 ) -> Result<()> {
     loop {
         let (stream, peer_addr) = match listener.accept().await {
@@ -52,8 +69,10 @@ pub async fn run(
         log::debug!("claude-code-ide incoming connection from {peer_addr}");
         let auth_token = auth_token.clone();
         let outbound = outbound.clone();
+        let tool_call_tx = tool_call_tx.clone();
         tokio::spawn(async move {
-            if let Err(error) = serve_connection(stream, auth_token, outbound).await {
+            if let Err(error) = serve_connection(stream, auth_token, outbound, tool_call_tx).await
+            {
                 log::warn!("claude-code-ide connection ended: {error}");
             }
         });
@@ -64,6 +83,7 @@ async fn serve_connection(
     stream: TcpStream,
     auth_token: Arc<String>,
     outbound: OutboundSender,
+    tool_call_tx: fut_mpsc::UnboundedSender<PendingToolCall>,
 ) -> Result<()> {
     let auth_for_callback = auth_token.clone();
     #[allow(clippy::result_large_err)]
@@ -112,9 +132,13 @@ async fn serve_connection(
         };
         match message {
             Message::Text(text) => {
-                if let Err(error) = handle_inbound(&text, &tx) {
-                    log::debug!("claude-code-ide handler error: {error}");
-                }
+                let tx = tx.clone();
+                let tool_call_tx = tool_call_tx.clone();
+                tokio::spawn(async move {
+                    if let Err(error) = handle_inbound(&text, &tx, &tool_call_tx).await {
+                        log::debug!("claude-code-ide handler error: {error}");
+                    }
+                });
             }
             Message::Ping(payload) => {
                 let _ = tx.send(Message::Pong(payload));
@@ -139,9 +163,40 @@ async fn serve_connection(
     Ok(())
 }
 
-fn handle_inbound(text: &str, tx: &mpsc::UnboundedSender<Message>) -> Result<()> {
+#[derive(Deserialize)]
+struct ToolCallParams {
+    name: String,
+    #[serde(default)]
+    arguments: Value,
+}
+
+async fn handle_inbound(
+    text: &str,
+    tx: &mpsc::UnboundedSender<Message>,
+    tool_call_tx: &fut_mpsc::UnboundedSender<PendingToolCall>,
+) -> Result<()> {
     let request: JsonRpcRequest = serde_json::from_str(text)
         .with_context(|| format!("parsing JSON-RPC frame: {text}"))?;
+
+    if request.method == "tools/call" {
+        let Some(id) = request.id.clone() else {
+            log::debug!("claude-code-ide ignoring tools/call without id");
+            return Ok(());
+        };
+        let response = match handle_tools_call(&request.params, tool_call_tx).await {
+            Ok(result) => {
+                let value = serde_json::to_value(&result)
+                    .context("serialising ToolResult")?;
+                ok_response(id, value)
+            }
+            Err(message) => error_response(id, -32602, message),
+        };
+        let json = serde_json::to_string(&response)?;
+        tx.send(Message::Text(json))
+            .map_err(|_| anyhow!("outbound channel closed"))?;
+        return Ok(());
+    }
+
     if let Some(response) = mcp_stubs::handle_request(&request) {
         let json = serde_json::to_string(&response)?;
         tx.send(Message::Text(json))
@@ -150,18 +205,67 @@ fn handle_inbound(text: &str, tx: &mpsc::UnboundedSender<Message>) -> Result<()>
     Ok(())
 }
 
+async fn handle_tools_call(
+    raw_params: &Value,
+    tool_call_tx: &fut_mpsc::UnboundedSender<PendingToolCall>,
+) -> Result<ToolResult, String> {
+    let params: ToolCallParams = serde_json::from_value(raw_params.clone())
+        .map_err(|error| format!("invalid tools/call params: {error}"))?;
+    log::debug!(
+        "claude-code-ide tools/call invoked: tool={} args={}",
+        params.name,
+        params.arguments
+    );
+    let (responder, response_rx) = oneshot::channel();
+    if tool_call_tx
+        .unbounded_send(PendingToolCall {
+            tool_name: params.name,
+            arguments: params.arguments,
+            responder,
+        })
+        .is_err()
+    {
+        return Ok(ToolResult::error("server unavailable"));
+    }
+    match response_rx.await {
+        Ok(result) => Ok(result),
+        Err(_) => Ok(ToolResult::error("server dropped tool call")),
+    }
+}
+
 /// Sends a `selection_changed` notification to the connected client, if any.
 /// Drops the message if no client is connected.
 pub async fn send_selection_changed(outbound: &OutboundSender, payload: SelectionPayload) {
+    send_notification(outbound, "selection_changed", payload).await;
+}
+
+/// Sends an `at_mentioned` notification to the connected client, if any.
+pub async fn send_at_mentioned(outbound: &OutboundSender, payload: AtMentionPayload) {
+    send_notification(outbound, "at_mentioned", payload).await;
+}
+
+/// Sends a `diagnostics_changed` notification to the connected client, if any.
+pub async fn send_diagnostics_changed(
+    outbound: &OutboundSender,
+    payload: DiagnosticsChangedPayload,
+) {
+    send_notification(outbound, "diagnostics_changed", payload).await;
+}
+
+async fn send_notification<T: serde::Serialize>(
+    outbound: &OutboundSender,
+    method: &'static str,
+    payload: T,
+) {
     let notification = JsonRpcNotification {
         jsonrpc: "2.0",
-        method: "selection_changed",
+        method,
         params: payload,
     };
     let json = match serde_json::to_string(&notification) {
         Ok(json) => json,
         Err(error) => {
-            log::warn!("failed to encode selection_changed: {error}");
+            log::warn!("failed to encode {method} notification: {error}");
             return;
         }
     };

@@ -74,6 +74,7 @@ watch.workspace = true
 worktree.workspace = true
 thiserror.workspace = true
 rayon.workspace = true
+url.workspace = true
 uuid = { workspace = true, features = ["v4"] }
 
 [target.'cfg(not(windows))'.dependencies]

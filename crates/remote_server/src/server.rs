@@ -1,3 +1,4 @@
+mod claude_code_ide_dispatcher;
 mod headless_project;
 
 #[cfg(test)]

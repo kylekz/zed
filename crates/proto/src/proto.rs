@@ -47,7 +47,11 @@ messages!(
     (CancelCall, Foreground),
     (CancelLanguageServerWork, Foreground),
     (ChannelMessageSent, Foreground),
+    (ClaudeCodeIdeAtMentioned, Background),
     (ClaudeCodeIdeSelectionChanged, Background),
+    (ClaudeCodeIdeServerStarted, Background),
+    (ClaudeCodeIdeWorkspaceToolCall, Background),
+    (ClaudeCodeIdeWorkspaceToolResponse, Background),
     (ChannelMessageUpdate, Foreground),
     (CloseBuffer, Foreground),
     (Commit, Background),
@@ -379,6 +383,10 @@ request_messages!(
     (AllocateWorktreeId, AllocateWorktreeIdResponse),
     (ApplyCodeAction, ApplyCodeActionResponse),
     (
+        ClaudeCodeIdeWorkspaceToolCall,
+        ClaudeCodeIdeWorkspaceToolResponse
+    ),
+    (
         ApplyCompletionAdditionalEdits,
         ApplyCompletionAdditionalEditsResponse
     ),
@@ -613,7 +621,10 @@ entity_messages!(
     BlameBuffer,
     BufferReloaded,
     BufferSaved,
+    ClaudeCodeIdeAtMentioned,
     ClaudeCodeIdeSelectionChanged,
+    ClaudeCodeIdeServerStarted,
+    ClaudeCodeIdeWorkspaceToolCall,
     CloseBuffer,
     Commit,
     RunGitHook,

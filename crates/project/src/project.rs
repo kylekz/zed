@@ -2,6 +2,7 @@ pub mod agent_registry_store;
 pub mod agent_server_store;
 pub mod bookmark_store;
 pub mod buffer_store;
+pub mod claude_code_ide_dispatcher;
 pub mod color_extractor;
 pub mod connection_manager;
 pub mod context_server_store;
@@ -217,6 +218,7 @@ pub struct Project {
     dap_store: Entity<DapStore>,
     agent_server_store: Entity<AgentServerStore>,
     claude_code_ide_server: Option<Entity<claude_code_ide_server::ClaudeCodeIdeServer>>,
+    claude_code_ide_remote_port: Option<u16>,
 
     bookmark_store: Entity<BookmarkStore>,
     breakpoint_store: Entity<BreakpointStore>,
@@ -1308,14 +1310,20 @@ impl Project {
 
             cx.subscribe(&lsp_store, Self::on_lsp_store_event).detach();
 
-            let claude_code_ide_server = match claude_code_ide_server::ClaudeCodeIdeServer::try_spawn(
-                Vec::new(),
-                &mut *cx,
-            ) {
-                Ok(entity) => Some(entity),
-                Err(error) => {
-                    log::debug!("claude-code-ide local server not started: {error}");
-                    None
+            let claude_code_ide_server = {
+                let dispatcher = Box::new(
+                    claude_code_ide_dispatcher::LocalDispatcher::new(cx.weak_entity()),
+                );
+                match claude_code_ide_server::ClaudeCodeIdeServer::try_spawn(
+                    Vec::new(),
+                    dispatcher,
+                    &mut *cx,
+                ) {
+                    Ok(entity) => Some(entity),
+                    Err(error) => {
+                        log::debug!("claude-code-ide local server not started: {error}");
+                        None
+                    }
                 }
             };
 
@@ -1346,6 +1354,7 @@ impl Project {
                 dap_store,
                 agent_server_store,
                 claude_code_ide_server,
+                claude_code_ide_remote_port: None,
 
                 buffers_needing_diff: Default::default(),
                 git_diff_debouncer: DebouncedDelay::new(),
@@ -1562,6 +1571,7 @@ impl Project {
                 git_store,
                 agent_server_store,
                 claude_code_ide_server: None,
+                claude_code_ide_remote_port: None,
                 client_subscriptions: Vec::new(),
                 _subscriptions: vec![
                     cx.on_release(Self::release),
@@ -1628,6 +1638,9 @@ impl Project {
             remote_proto.add_entity_message_handler(Self::handle_update_project);
             remote_proto.add_entity_message_handler(Self::handle_toast);
             remote_proto.add_entity_request_handler(Self::handle_language_server_prompt_request);
+            remote_proto
+                .add_entity_request_handler(Self::handle_claude_code_ide_workspace_tool_call);
+            remote_proto.add_entity_message_handler(Self::handle_claude_code_ide_server_started);
             remote_proto.add_entity_message_handler(Self::handle_hide_toast);
             remote_proto.add_entity_request_handler(Self::handle_update_buffer_from_remote_server);
             remote_proto.add_entity_request_handler(Self::handle_trust_worktrees);
@@ -1881,6 +1894,7 @@ impl Project {
                 git_store: git_store.clone(),
                 agent_server_store,
                 claude_code_ide_server: None,
+                claude_code_ide_remote_port: None,
                 buffers_needing_diff: Default::default(),
                 git_diff_debouncer: DebouncedDelay::new(),
                 terminals: Terminals {
@@ -2222,6 +2236,18 @@ impl Project {
         &self,
     ) -> Option<&Entity<claude_code_ide_server::ClaudeCodeIdeServer>> {
         self.claude_code_ide_server.as_ref()
+    }
+
+    /// Returns the port to inject into spawned terminal env as
+    /// `CLAUDE_CODE_SSE_PORT`. For local projects this is the in-process
+    /// server's port. For remote projects this is the headless server's port,
+    /// learned over proto right after the headless server starts. `None` until
+    /// the message arrives, in which case the CLI falls back to lockfile scan.
+    pub fn claude_code_ide_port(&self, cx: &App) -> Option<u16> {
+        if let Some(server) = self.claude_code_ide_server.as_ref() {
+            return Some(server.read(cx).port());
+        }
+        self.claude_code_ide_remote_port
     }
 
     #[inline]
@@ -3536,6 +3562,7 @@ impl Project {
     ) {
         match event {
             LspStoreEvent::DiagnosticsUpdated { server_id, paths } => {
+                self.notify_claude_code_ide_diagnostics_changed(paths, cx);
                 cx.emit(Event::DiagnosticsUpdated {
                     paths: paths.clone(),
                     language_server_id: *server_id,
@@ -3815,6 +3842,29 @@ impl Project {
             .collect();
         server.update(cx, |server, cx| {
             server.update_workspace_folders(folders, cx);
+        });
+    }
+
+    fn notify_claude_code_ide_diagnostics_changed(
+        &self,
+        paths: &[ProjectPath],
+        cx: &mut Context<Self>,
+    ) {
+        let Some(server) = self.claude_code_ide_server.clone() else {
+            return;
+        };
+        let uris: Vec<String> = paths
+            .iter()
+            .filter_map(|project_path| {
+                let abs_path = self.absolute_path(project_path, cx)?;
+                url::Url::from_file_path(&abs_path).ok().map(|u| u.to_string())
+            })
+            .collect();
+        if uris.is_empty() {
+            return;
+        }
+        server.update(cx, |server, cx| {
+            server.enqueue_diagnostics_changed(uris, cx);
         });
     }
 
@@ -5316,6 +5366,48 @@ impl Project {
                 notification_id: envelope.payload.notification_id.into(),
             });
             Ok(())
+        })
+    }
+
+    async fn handle_claude_code_ide_server_started(
+        this: Entity<Self>,
+        envelope: TypedEnvelope<proto::ClaudeCodeIdeServerStarted>,
+        mut cx: AsyncApp,
+    ) -> Result<()> {
+        let port = envelope.payload.port;
+        let port = u16::try_from(port).ok();
+        this.update(&mut cx, |this, _cx| {
+            this.claude_code_ide_remote_port = port;
+        });
+        Ok(())
+    }
+
+    async fn handle_claude_code_ide_workspace_tool_call(
+        this: Entity<Self>,
+        envelope: TypedEnvelope<proto::ClaudeCodeIdeWorkspaceToolCall>,
+        cx: AsyncApp,
+    ) -> Result<proto::ClaudeCodeIdeWorkspaceToolResponse> {
+        let payload = envelope.payload;
+        let arguments: serde_json::Value =
+            serde_json::from_str(&payload.params_json).unwrap_or(serde_json::Value::Null);
+        let project_entity_id = this.entity_id();
+        let task = cx.update(|cx| {
+            claude_code_ide_server::dispatch_remote_workspace_tool(
+                project_entity_id,
+                &payload.tool_name,
+                &arguments,
+                cx,
+            )
+        });
+        let result = task.await;
+        let content_text = result
+            .content
+            .first()
+            .map(|block| block.text.clone())
+            .unwrap_or_default();
+        Ok(proto::ClaudeCodeIdeWorkspaceToolResponse {
+            content_json: content_text,
+            is_error: result.is_error.unwrap_or(false),
         })
     }
 

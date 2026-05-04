@@ -253,14 +253,37 @@ impl HeadlessProject {
             context_server_store
         });
 
-        let claude_code_ide_server = match claude_code_ide_server::ClaudeCodeIdeServer::try_spawn(
-            Vec::new(),
-            &mut *cx,
-        ) {
-            Ok(entity) => Some(entity),
-            Err(error) => {
-                log::debug!("claude-code-ide remote server not started: {error}");
-                None
+        let claude_code_ide_server = {
+            let dispatcher = Box::new(
+                crate::claude_code_ide_dispatcher::RemoteDispatcher::new(cx.weak_entity()),
+            );
+            match claude_code_ide_server::ClaudeCodeIdeServer::try_spawn(
+                Vec::new(),
+                dispatcher,
+                &mut *cx,
+            ) {
+                Ok(entity) => {
+                    let workspace_handler = Box::new(
+                        crate::claude_code_ide_dispatcher::RemoteWorkspaceToolHandler::new(
+                            session.clone(),
+                        ),
+                    );
+                    let port = entity.read(cx).port();
+                    entity.update(cx, |server, cx| {
+                        server.set_workspace_tool_handler(workspace_handler, cx);
+                    });
+                    session
+                        .send(proto::ClaudeCodeIdeServerStarted {
+                            project_id: REMOTE_SERVER_PROJECT_ID,
+                            port: port as u32,
+                        })
+                        .log_err();
+                    Some(entity)
+                }
+                Err(error) => {
+                    log::debug!("claude-code-ide remote server not started: {error}");
+                    None
+                }
             }
         };
 
@@ -355,6 +378,7 @@ impl HeadlessProject {
 
         session.add_entity_message_handler(Self::handle_find_search_candidates_cancel);
         session.add_entity_message_handler(Self::handle_claude_code_ide_selection_changed);
+        session.add_entity_message_handler(Self::handle_claude_code_ide_at_mentioned);
         session.add_entity_request_handler(BufferStore::handle_update_buffer);
         session.add_entity_message_handler(BufferStore::handle_close_buffer);
 
@@ -508,8 +532,43 @@ impl HeadlessProject {
                 })
                 .detach();
             }
+            LspStoreEvent::DiagnosticsUpdated { paths, .. } => {
+                self.notify_claude_code_ide_diagnostics_changed(paths, cx);
+            }
             _ => {}
         }
+    }
+
+    fn notify_claude_code_ide_diagnostics_changed(
+        &self,
+        paths: &[project::ProjectPath],
+        cx: &mut Context<Self>,
+    ) {
+        let Some(server) = self.claude_code_ide_server.clone() else {
+            return;
+        };
+        let worktree_store = self.worktree_store.clone();
+        let uris: Vec<String> = paths
+            .iter()
+            .filter_map(|project_path| {
+                let worktree = worktree_store
+                    .read(cx)
+                    .worktree_for_id(project_path.worktree_id, cx)?;
+                let abs_path = worktree
+                    .read(cx)
+                    .abs_path()
+                    .join(project_path.path.as_std_path());
+                url::Url::from_file_path(&abs_path)
+                    .ok()
+                    .map(|url| url.to_string())
+            })
+            .collect();
+        if uris.is_empty() {
+            return;
+        }
+        server.update(cx, |server, cx| {
+            server.enqueue_diagnostics_changed(uris, cx);
+        });
     }
 
     pub async fn handle_add_worktree(
@@ -1288,9 +1347,29 @@ impl HeadlessProject {
                     is_empty: payload.is_empty,
                 },
             };
-            server
-                .read(cx)
-                .notify_selection_changed(selection, cx);
+            server.update(cx, |server, cx| {
+                server.notify_selection_changed(selection, cx);
+            });
+        });
+        Ok(())
+    }
+
+    async fn handle_claude_code_ide_at_mentioned(
+        this: Entity<Self>,
+        envelope: TypedEnvelope<proto::ClaudeCodeIdeAtMentioned>,
+        mut cx: AsyncApp,
+    ) -> Result<()> {
+        let payload = envelope.payload;
+        this.update(&mut cx, |this, cx| {
+            let Some(server) = this.claude_code_ide_server.as_ref() else {
+                return;
+            };
+            let mention = claude_code_ide_server::AtMentionPayload {
+                file_path: payload.file_path,
+                line_start: payload.line_start,
+                line_end: payload.line_end,
+            };
+            server.read(cx).notify_at_mentioned(mention, cx);
         });
         Ok(())
     }

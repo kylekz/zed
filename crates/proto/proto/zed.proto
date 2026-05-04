@@ -480,9 +480,16 @@ message Envelope {
     GitCreateArchiveCheckpointResponse git_create_archive_checkpoint_response = 445;
     GitRestoreArchiveCheckpoint git_restore_archive_checkpoint = 446;
     GetCommitData get_commit_data = 447;
-    GetCommitDataResponse get_commit_data_response = 448;
+    GetCommitDataResponse get_commit_data_response = 448; // current upstream max
 
-    ClaudeCodeIdeSelectionChanged claude_code_ide_selection_changed = 449; // current max
+    // === Fork additions (claude-code-ide bridge). Reserved range: 10000-10099. ===
+    // High range avoids collisions when merging upstream. Add new fork-only
+    // messages within 10000-10099. Bump the reservation if the block fills.
+    ClaudeCodeIdeSelectionChanged claude_code_ide_selection_changed = 10000;
+    ClaudeCodeIdeAtMentioned claude_code_ide_at_mentioned = 10001;
+    ClaudeCodeIdeWorkspaceToolCall claude_code_ide_workspace_tool_call = 10002;
+    ClaudeCodeIdeWorkspaceToolResponse claude_code_ide_workspace_tool_response = 10003;
+    ClaudeCodeIdeServerStarted claude_code_ide_server_started = 10004;
   }
 
   reserved 87 to 88;
@@ -588,4 +595,36 @@ message ClaudeCodeIdeSelectionChanged {
   uint32 end_line = 7;
   uint32 end_character = 8;
   bool is_empty = 9;
+}
+
+// Generic envelope for workspace-scoped MCP tool calls. The server
+// (HeadlessProject in remote mode) sends this to the UI side, which resolves
+// the active Workspace for the project, runs the tool, and replies with the
+// MCP `content` array as JSON. Local-mode dispatch never traverses this proto
+// boundary; it goes directly through the in-process workspace handler.
+message ClaudeCodeIdeAtMentioned {
+  uint64 project_id = 1;
+  string file_path = 2;
+  optional uint32 line_start = 3;
+  optional uint32 line_end = 4;
+}
+
+message ClaudeCodeIdeWorkspaceToolCall {
+  uint64 project_id = 1;
+  string tool_name = 2;
+  string params_json = 3;
+}
+
+message ClaudeCodeIdeWorkspaceToolResponse {
+  string content_json = 1;
+  bool is_error = 2;
+}
+
+// Fired by HeadlessProject right after spawning the WS server so the UI can
+// inject CLAUDE_CODE_SSE_PORT into remote terminals. Best-effort: if the
+// message is missed, terminals just lack the env var and the CLI falls back to
+// a lockfile scan.
+message ClaudeCodeIdeServerStarted {
+  uint64 project_id = 1;
+  uint32 port = 2;
 }

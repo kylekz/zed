@@ -148,6 +148,8 @@ fn dispatch(project: &gpui::Entity<Project>, payload: SelectionPayload, cx: &mut
         return;
     }
     if let Some(server) = project_ref.claude_code_ide_server().cloned() {
-        server.read(cx).notify_selection_changed(payload, cx);
+        server.update(cx, |server, cx| {
+            server.notify_selection_changed(payload, cx);
+        });
     }
 }

@@ -5,6 +5,24 @@
 
 Welcome to Zed, a high-performance, multiplayer code editor from the creators of [Atom](https://github.com/atom/atom) and [Tree-sitter](https://github.com/tree-sitter/tree-sitter).
 
+### Fork
+
+This is a fork that reimplements the Claude Code VSCode extension into Zed. I don't know Rust, I haven't read any of the code. No compiled binaries are provided, you must build from source.
+
+Current functionality includes:
+
+- Selection / current-file syncing with Claude Code (in-editor highlights appear as context in the next CLI turn)
+- Read-only MCP tools: `getDiagnostics`, `getWorkspaceFolders`, `checkDocumentDirty`, `getLatestSelection`, `getCurrentSelection`, `getOpenEditors`
+- `at_mentioned` notification — workspace action `claude_code_ide::SendSelectionAsAtMention` (no default keybinding; bind in your keymap)
+- `diagnostics_changed` notification (debounced over a 500 ms window)
+- Terminal env injection: `CLAUDE_CODE_SSE_PORT` is set in Zed-spawned terminals (local and WSL/SSH) so `claude` connects without scanning lockfiles
+
+Planned:
+
+- Mutating tools (`openFile`, `saveDocument`)
+- Diff-tab tools (`openDiff`, `closeAllDiffTabs`, `close_tab`)
+- Stale-lockfile cleanup on startup
+
 ---
 
 ### Installation

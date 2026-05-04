@@ -45,6 +45,68 @@ pub fn ok_response(id: Value, result: Value) -> JsonRpcResponse {
     }
 }
 
+/// Builds a JSON-RPC error response. Used for protocol-level failures (bad
+/// params, unparseable arguments). Tool-level failures are reported via the
+/// `ToolResult::error` shape and travel as a successful JSON-RPC response.
+pub fn error_response(id: Value, code: i32, message: impl Into<String>) -> JsonRpcResponse {
+    JsonRpcResponse {
+        jsonrpc: "2.0",
+        id,
+        result: None,
+        error: Some(JsonRpcError {
+            code,
+            message: message.into(),
+        }),
+    }
+}
+
+/// Mirrors MCP's content-block shape. `kind` maps to the JSON `"type"` field.
+#[derive(Debug, Clone, Serialize)]
+pub struct ContentBlock {
+    #[serde(rename = "type")]
+    pub kind: &'static str,
+    pub text: String,
+}
+
+impl ContentBlock {
+    pub fn text(text: impl Into<String>) -> Self {
+        Self {
+            kind: "text",
+            text: text.into(),
+        }
+    }
+}
+
+/// MCP tool result body. Always serializes — `is_error` is omitted when `None`
+/// to match the protocol's "absent means success" convention.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolResult {
+    pub content: Vec<ContentBlock>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub is_error: Option<bool>,
+}
+
+impl ToolResult {
+    pub fn ok(content: Vec<ContentBlock>) -> Self {
+        Self {
+            content,
+            is_error: None,
+        }
+    }
+
+    pub fn ok_text(text: impl Into<String>) -> Self {
+        Self::ok(vec![ContentBlock::text(text)])
+    }
+
+    pub fn error(message: impl Into<String>) -> Self {
+        Self {
+            content: vec![ContentBlock::text(message)],
+            is_error: Some(true),
+        }
+    }
+}
+
 /// Position payload mirrors `vscode.Position` (UTF-16 character offsets).
 #[derive(Debug, Clone, Serialize)]
 pub struct Position {
@@ -60,6 +122,28 @@ pub struct SelectionPayload {
     pub file_path: String,
     pub file_url: String,
     pub selection: SelectionRange,
+}
+
+/// Mirrors the VS Code extension's `at_mentioned` notification payload. Sent
+/// when the user explicitly invokes the "send selection as @mention" action;
+/// `line_start` / `line_end` are omitted when the selection is empty
+/// (matching the extension's behavior in `Y94` / `j94`).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AtMentionPayload {
+    pub file_path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub line_start: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub line_end: Option<u32>,
+}
+
+/// Mirrors the VS Code extension's `diagnostics_changed` notification.
+/// Pushed after a 500ms quiet window so a burst of LSP updates collapses into
+/// one frame.
+#[derive(Debug, Clone, Serialize)]
+pub struct DiagnosticsChangedPayload {
+    pub uris: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
