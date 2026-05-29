@@ -58,3 +58,6 @@ crates/docs_preprocessor/actions.json
 
 # Claude Code VSCode extension docs etc
 /claude-code-ext/
+
+# NixOS integration test state
+.nixos-test-history
