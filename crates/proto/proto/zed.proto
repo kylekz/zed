@@ -488,7 +488,9 @@ message Envelope {
     GetDocumentLinks get_document_links = 453;
     GetDocumentLinksResponse get_document_links_response = 454;
     ResolveDocumentLink resolve_document_link = 455;
-    ResolveDocumentLinkResponse resolve_document_link_response = 456; // current upstream max
+    ResolveDocumentLinkResponse resolve_document_link_response = 456;
+    GitWorktreeCreatedAt git_worktree_created_at = 457;
+    GitWorktreeCreatedAtResponse git_worktree_created_at_response = 458; // current upstream max
 
     // === Fork additions (claude-code-ide bridge). Reserved range: 10000-10099. ===
     // High range avoids collisions when merging upstream. Add new fork-only
