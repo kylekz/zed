@@ -24,7 +24,8 @@ use fuzzy::CharBag;
 use git::{
     BISECT_LOG, COMMIT_MESSAGE, DOT_GIT, FETCH_HEAD, FSMONITOR_DAEMON, GC_PID, GITIGNORE,
     HOOKS_DIR, INFO_DIR, LFS_DIR, LOGS_DIR, LOGS_REF_STASH, OBJECTS_DIR, ORIG_HEAD,
-    REBASE_APPLY_DIR, REBASE_MERGE_DIR, REPO_EXCLUDE, SEQUENCER_DIR, status::GitSummary,
+    REBASE_APPLY_DIR, REBASE_MERGE_DIR, REFS_DIR, REFTABLE_DIR, REPO_EXCLUDE, SEQUENCER_DIR,
+    status::GitSummary,
 };
 use gpui::{
     App, AppContext as _, AsyncApp, BackgroundExecutor, Context, Entity, EventEmitter, Priority,
@@ -497,7 +498,9 @@ impl Worktree {
                     abs_path
                         .file_name()
                         .and_then(|f| f.to_str())
-                        .map_or(RelPath::empty_arc(), |f| RelPath::unix(f).unwrap().into()),
+                        .map_or(RelPath::empty_arc(), |f| {
+                            RelPath::from_unix_str(f).unwrap().into()
+                        }),
                     abs_path.clone(),
                     PathStyle::local(),
                 ),
@@ -540,7 +543,7 @@ impl Worktree {
                 } else {
                     if let Some(file_name) = abs_path.file_name()
                         && let Some(file_name) = file_name.to_str()
-                        && let Ok(path) = RelPath::unix(file_name)
+                        && let Ok(path) = RelPath::from_unix_str(file_name)
                     {
                         entry.is_private = !share_private_files && settings.is_path_private(path);
                         entry.is_hidden = settings.is_path_hidden(path);
@@ -585,7 +588,8 @@ impl Worktree {
         cx.new(|cx: &mut Context<Self>| {
             let mut snapshot = Snapshot::new(
                 WorktreeId::from_proto(worktree.id),
-                RelPath::from_proto(&worktree.root_name).unwrap_or_else(|_| RelPath::empty_arc()),
+                RelPath::from_unix_str(&worktree.root_name)
+                    .map_or_else(|_| RelPath::empty_arc(), Into::into),
                 Path::new(&worktree.abs_path).into(),
                 path_style,
             );
@@ -680,9 +684,11 @@ impl Worktree {
                                 for entry in &update.updated_entries {
                                     // Remote updates don't distinguish creation from
                                     // modification, so report `AddedOrUpdated`.
-                                    if let Some(path) = RelPath::from_proto(&entry.path).log_err() {
+                                    if let Some(path) =
+                                        RelPath::from_unix_str(&entry.path).log_err()
+                                    {
                                         changed_entries.push((
-                                            path,
+                                            path.into(),
                                             ProjectEntryId::from_proto(entry.id),
                                             PathChange::AddedOrUpdated,
                                         ));
@@ -791,7 +797,7 @@ impl Worktree {
     pub fn metadata_proto(&self) -> proto::WorktreeMetadata {
         proto::WorktreeMetadata {
             id: self.id().to_proto(),
-            root_name: self.root_name().to_proto(),
+            root_name: self.root_name().as_unix_str().to_owned(),
             visible: self.is_visible(),
             abs_path: self.abs_path().to_string_lossy().into_owned(),
             root_repo_common_dir: self
@@ -930,7 +936,7 @@ impl Worktree {
                 let request = this.client.request(proto::CreateProjectEntry {
                     worktree_id: worktree_id.to_proto(),
                     project_id,
-                    path: path.as_ref().to_proto(),
+                    path: path.as_ref().as_unix_str().to_owned(),
                     content,
                     is_directory,
                 });
@@ -1093,9 +1099,11 @@ impl Worktree {
             anyhow::Ok((
                 this.scan_id(),
                 this.create_entry(
-                    RelPath::from_proto(&request.path).with_context(|| {
-                        format!("received invalid relative path {:?}", request.path)
-                    })?,
+                    RelPath::from_unix_str(&request.path)
+                        .with_context(|| {
+                            format!("received invalid relative path {:?}", request.path)
+                        })?
+                        .into(),
                     request.is_directory,
                     request.content,
                     cx,
@@ -1695,7 +1703,7 @@ impl LocalWorktree {
                     let refresh_full_path = lowest_ancestor.join(refresh_path);
 
                     refreshes.push(this.as_local_mut().unwrap().refresh_entry(
-                        refresh_full_path,
+                        refresh_full_path.into(),
                         None,
                         cx,
                     ));
@@ -2158,7 +2166,9 @@ impl LocalWorktree {
             .as_path()
             .file_name()
             .and_then(|f| f.to_str())
-            .map_or(RelPath::empty_arc(), |f| RelPath::unix(f).unwrap().into());
+            .map_or(RelPath::empty_arc(), |f| {
+                RelPath::from_unix_str(f).unwrap().into()
+            });
         self.snapshot.update_abs_path(new_path, root_name);
         self.restart_background_scanners(cx);
     }
@@ -2371,7 +2381,7 @@ impl RemoteWorktree {
                 let Some(filename) = root_path_to_copy
                     .file_name()
                     .and_then(|name| name.to_str())
-                    .and_then(|filename| RelPath::unix(filename).ok())
+                    .and_then(|filename| RelPath::from_unix_str(filename).ok())
                 else {
                     continue;
                 };
@@ -2400,7 +2410,7 @@ impl RemoteWorktree {
                     requests.push(proto::CreateProjectEntry {
                         project_id,
                         worktree_id,
-                        path: target_path.to_proto(),
+                        path: target_path.as_unix_str().to_owned(),
                         is_directory,
                         content,
                     });
@@ -2489,7 +2499,7 @@ impl Snapshot {
             project_id,
             worktree_id,
             abs_path: self.abs_path().to_string_lossy().into_owned(),
-            root_name: self.root_name().to_proto(),
+            root_name: self.root_name().as_unix_str().to_owned(),
             root_repo_common_dir: self
                 .root_repo_common_dir()
                 .map(|p| p.to_string_lossy().into_owned()),
@@ -2595,10 +2605,10 @@ impl Snapshot {
             update.updated_entries.len(),
             update.removed_entries.len()
         );
-        if let Some(root_name) = RelPath::from_proto(&update.root_name).log_err() {
+        if let Some(root_name) = RelPath::from_unix_str(&update.root_name).log_err() {
             self.update_abs_path(
                 SanitizedPath::new_arc(&Path::new(&update.abs_path)),
-                root_name,
+                root_name.into(),
             );
         }
 
@@ -2807,6 +2817,17 @@ impl Snapshot {
         })
     }
 
+    /// Whether `path` is gitignored, or lies inside a gitignored directory.
+    ///
+    /// The contents of ignored directories aren't scanned until explicitly
+    /// expanded, so when `path` has no entry this falls back to the ignore
+    /// status of its nearest scanned ancestor.
+    pub fn is_path_ignored(&self, path: &RelPath) -> bool {
+        path.ancestors()
+            .find_map(|ancestor| self.entry_for_path(ancestor))
+            .is_some_and(|entry| entry.is_ignored)
+    }
+
     /// Resolves a path to an executable using the following heuristics:
     ///
     /// 1. If the path starts with `~`, it is expanded to the user's home directory.
@@ -2882,7 +2903,7 @@ impl LocalSnapshot {
             project_id,
             worktree_id,
             abs_path: self.abs_path().to_string_lossy().into_owned(),
-            root_name: self.root_name().to_proto(),
+            root_name: self.root_name().as_unix_str().to_owned(),
             root_repo_common_dir: self
                 .root_repo_common_dir()
                 .map(|p| p.to_string_lossy().into_owned()),
@@ -2969,10 +2990,11 @@ impl LocalSnapshot {
                 }
             }
 
-            let metadata = fs.metadata(&ancestor.join(DOT_GIT)).await.ok().flatten();
-            if metadata.is_some() {
-                repo_root = Some(Arc::from(ancestor));
-                break;
+            if repo_root.is_none() {
+                let metadata = fs.metadata(&ancestor.join(DOT_GIT)).await.ok().flatten();
+                if metadata.is_some() {
+                    repo_root = Some(Arc::from(ancestor));
+                }
             }
         }
 
@@ -2989,11 +3011,14 @@ impl LocalSnapshot {
             ignore_stack = ignore_stack.append(IgnoreKind::RepoExclude, repo_exclude.clone());
         }
         ignore_stack.repo_root = repo_root;
+        let mut ancestor_ignore_stack = ignore_stack.clone();
         for (parent_abs_path, ignore) in new_ignores.into_iter().rev() {
-            if ignore_stack.is_abs_path_ignored(parent_abs_path, true) {
+            if ancestor_ignore_stack.is_abs_path_ignored(parent_abs_path, true) {
                 ignore_stack = IgnoreStack::all();
                 break;
             } else if let Some(ignore) = ignore {
+                let kind = IgnoreKind::Gitignore(parent_abs_path.into());
+                ancestor_ignore_stack = ancestor_ignore_stack.append(kind, ignore.clone());
                 ignore_stack =
                     ignore_stack.append(IgnoreKind::Gitignore(parent_abs_path.into()), ignore);
             }
@@ -3085,7 +3110,7 @@ impl LocalSnapshot {
                 assert!(self.entry_for_path(ignore_parent_path).is_some());
                 assert!(
                     self.entry_for_path(
-                        &ignore_parent_path.join(RelPath::unix(GITIGNORE).unwrap())
+                        &ignore_parent_path.join(RelPath::from_unix_str(GITIGNORE).unwrap())
                     )
                     .is_some()
                 );
@@ -3463,14 +3488,9 @@ impl BackgroundScannerState {
             .context("failed to add repository directory to watcher")
             .log_err();
 
-        // On Linux and FreeBSD, the native watcher is non-recursive, so subdirectories inside `.git` need explicit watching.
-        // For repos using the reftable backend, watch the `.git/reftable` directory so that ref changes are detected.
-        let reftable_path = common_dir_abs_path.join("reftable");
-        if fs.is_dir(&reftable_path).await {
-            watcher
-                .add(&reftable_path)
-                .context("failed to add reftable directory to watcher")
-                .log_err();
+        watch_git_dir_subdirectories(&common_dir_abs_path, fs, watcher).await;
+        if repository_dir_abs_path != common_dir_abs_path {
+            watch_git_dir_subdirectories(&repository_dir_abs_path, fs, watcher).await;
         }
 
         let work_directory_id = work_dir_entry.id;
@@ -3491,6 +3511,55 @@ impl BackgroundScannerState {
 
         log::trace!("inserting new local git repository");
         Ok(local_repository)
+    }
+}
+
+/// Watches the directories inside a git directory that git writes ref updates to.
+///
+/// On Linux and FreeBSD the native file watcher is non-recursive, so a watch on the git
+/// directory itself does not report changes to files nested below it, such as the loose
+/// refs that git updates on commit, fetch, and branch operations. Watch the `refs` tree
+/// (its directories are watched individually because branch names may contain slashes)
+/// and, for repositories using the reftable backend, the `reftable` directory. On
+/// platforms with recursive watchers these calls are deduplicated against the existing
+/// recursive registration, making them effectively free.
+async fn watch_git_dir_subdirectories(git_dir_abs_path: &Path, fs: &dyn Fs, watcher: &dyn Watcher) {
+    let reftable_dir_abs_path = git_dir_abs_path.join(REFTABLE_DIR);
+    if fs.is_dir(&reftable_dir_abs_path).await {
+        watcher
+            .add(&reftable_dir_abs_path)
+            .context("failed to add reftable directory to watcher")
+            .log_err();
+    }
+
+    watch_dir_tree(git_dir_abs_path.join(REFS_DIR), fs, watcher).await;
+}
+
+/// Watches a directory and all of its descendant directories.
+///
+/// Each directory is watched before its children are enumerated, so that a child
+/// created concurrently is either seen by the enumeration or reported by the watch.
+async fn watch_dir_tree(root_abs_path: PathBuf, fs: &dyn Fs, watcher: &dyn Watcher) {
+    let mut dirs_to_watch = vec![root_abs_path];
+    while let Some(dir_abs_path) = dirs_to_watch.pop() {
+        if !fs.is_dir(&dir_abs_path).await {
+            continue;
+        }
+        watcher
+            .add(&dir_abs_path)
+            .with_context(|| format!("failed to watch directory {dir_abs_path:?}"))
+            .log_err();
+        let Some(mut children) = fs.read_dir(&dir_abs_path).await.log_err() else {
+            continue;
+        };
+        while let Some(child_abs_path) = children.next().await {
+            let Some(child_abs_path) = child_abs_path.log_err() else {
+                continue;
+            };
+            if fs.is_dir(&child_abs_path).await {
+                dirs_to_watch.push(child_abs_path);
+            }
+        }
     }
 }
 
@@ -3633,7 +3702,7 @@ impl language::File for File {
         rpc::proto::File {
             worktree_id: self.worktree.read(cx).id().to_proto(),
             entry_id: self.entry_id.map(|id| id.to_proto()),
-            path: self.path.as_ref().to_proto(),
+            path: self.path.as_ref().as_unix_str().to_owned(),
             mtime: self.disk_state.mtime().map(|time| time.into()),
             is_deleted: self.disk_state.is_deleted(),
             is_historic: matches!(self.disk_state, DiskState::Historic { .. }),
@@ -3718,7 +3787,9 @@ impl File {
 
         Ok(Self {
             worktree,
-            path: RelPath::from_proto(&proto.path).context("invalid path in file protobuf")?,
+            path: RelPath::from_unix_str(&proto.path)
+                .context("invalid path in file protobuf")?
+                .into(),
             disk_state,
             entry_id: proto.entry_id.map(ProjectEntryId::from_proto),
             is_local: false,
@@ -4648,6 +4719,24 @@ impl BackgroundScanner {
                         continue;
                     }
 
+                    // New directories can appear under the `refs` tree at any time, e.g. when a
+                    // remote is added or a branch name contains slashes. On platforms where the
+                    // native watcher is non-recursive they need their own watches, or subsequent
+                    // ref updates inside them would go unnoticed. The subtree is walked because
+                    // nested directories may have been created before this watch took effect.
+                    if matches!(event.kind, Some(PathEventKind::Created))
+                        && path_in_git_dir
+                            .components()
+                            .any(|component| component.as_os_str() == OsStr::new(REFS_DIR))
+                    {
+                        watch_dir_tree(
+                            abs_path.as_path().to_path_buf(),
+                            self.fs.as_ref(),
+                            self.watcher.as_ref(),
+                        )
+                        .await;
+                    }
+
                     if !dot_git_abs_paths.contains(&dot_git_abs_path) {
                         log::debug!(
                             "detected update within git repo at {dot_git_abs_path:?}: {abs_path:?}"
@@ -5074,10 +5163,11 @@ impl BackgroundScanner {
             let child_name = child_abs_path.file_name().unwrap();
             let Some(child_path) = child_name
                 .to_str()
-                .and_then(|name| Some(job.path.join(RelPath::unix(name).ok()?)))
+                .and_then(|name| Some(job.path.join(RelPath::from_unix_str(name).ok()?)))
             else {
                 continue;
             };
+            let child_path: Arc<RelPath> = child_path.into();
 
             if self.track_git_repositories {
                 if child_name == DOT_GIT {
@@ -5217,7 +5307,7 @@ impl BackgroundScanner {
             {
                 let relative_path = job
                     .path
-                    .join(RelPath::unix(child_name.to_str().unwrap()).unwrap());
+                    .join(RelPath::from_unix_str(child_name.to_str().unwrap()).unwrap());
                 if self.is_path_private(&relative_path) {
                     log::debug!("detected private file: {relative_path:?}");
                     child_entry.is_private = true;
@@ -5599,7 +5689,8 @@ impl BackgroundScanner {
                             }
                         }
 
-                        let ignore_path = parent_path.join(RelPath::unix(GITIGNORE).unwrap());
+                        let ignore_path =
+                            parent_path.join(RelPath::from_unix_str(GITIGNORE).unwrap());
                         if snapshot.snapshot.entry_for_path(&ignore_path).is_none() {
                             return false;
                         }
@@ -5826,7 +5917,9 @@ impl BackgroundScanner {
                     .entry_for_id(work_directory_id)
                     .is_some_and(|entry| {
                         snapshot
-                            .entry_for_path(&entry.path.join(RelPath::unix(DOT_GIT).unwrap()))
+                            .entry_for_path(
+                                &entry.path.join(RelPath::from_unix_str(DOT_GIT).unwrap()),
+                            )
                             .is_some()
                     });
 
@@ -6206,7 +6299,7 @@ impl WorktreeModelHandle for Entity<Worktree> {
             // Check if condition is already met before waiting for events
             let file_exists = || {
                 tree.read_with(cx, |tree, _| {
-                    tree.entry_for_path(RelPath::unix(file_name).unwrap())
+                    tree.entry_for_path(RelPath::from_unix_str(file_name).unwrap())
                         .is_some()
                 })
             };
@@ -6226,7 +6319,7 @@ impl WorktreeModelHandle for Entity<Worktree> {
             // Check if condition is already met before waiting for events
             let file_gone = || {
                 tree.read_with(cx, |tree, _| {
-                    tree.entry_for_path(RelPath::unix(file_name).unwrap())
+                    tree.entry_for_path(RelPath::from_unix_str(file_name).unwrap())
                         .is_none()
                 })
             };
@@ -6593,7 +6686,7 @@ impl<'a> From<&'a Entry> for proto::Entry {
         Self {
             id: entry.id.to_proto(),
             is_dir: entry.is_dir(),
-            path: entry.path.as_ref().to_proto(),
+            path: entry.path.as_ref().as_unix_str().to_owned(),
             inode: entry.inode,
             mtime: entry.mtime.map(|time| time.into()),
             is_ignored: entry.is_ignored,
@@ -6621,14 +6714,14 @@ impl TryFrom<(&CharBag, &PathMatcher, proto::Entry)> for Entry {
             EntryKind::File
         };
 
-        let path =
-            RelPath::from_proto(&entry.path).context("invalid relative path in proto message")?;
+        let path = RelPath::from_unix_str(&entry.path)
+            .context("invalid relative path in proto message")?;
         let char_bag = char_bag_for_path(*root_char_bag, &path);
         let is_always_included = always_included.is_match(&path);
         Ok(Entry {
             id: ProjectEntryId::from_proto(entry.id),
             kind,
-            path,
+            path: path.into(),
             inode: entry.inode,
             mtime: entry.mtime.map(|time| time.into()),
             size: entry.size.unwrap_or(0),
