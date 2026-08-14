@@ -3744,7 +3744,7 @@ fn search_and_files_page() -> SettingsPage {
         ]
     }
 
-    fn file_scan_section() -> [SettingsPageItem; 6] {
+    fn file_scan_section() -> [SettingsPageItem; 7] {
         [
             SettingsPageItem::SectionHeader("File Scan"),
             SettingsPageItem::SettingItem(SettingItem {
@@ -3792,6 +3792,22 @@ fn search_and_files_page() -> SettingsPage {
                 ),
                 metadata: None,
                 files: USER,
+            }),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "File Scan Depth",
+                description: "Maximum directory depth to eagerly index outside of git repositories; contents of directories at this depth or deeper are indexed on demand. Repositories rooted shallower than this depth are always indexed fully. In projects that are not rooted at a git repository, repositories directly inside a root folder activate their git features immediately; deeper ones activate on first use. 0 means no limit and activates all git repositories immediately",
+                field: Box::new(SettingField {
+                    organization_override: None,
+                    json_path: Some("file_scan_depth"),
+                    pick: |settings_content| {
+                        settings_content.project.worktree.file_scan_depth.as_ref()
+                    },
+                    write: |settings_content, value, _| {
+                        settings_content.project.worktree.file_scan_depth = value;
+                    },
+                }),
+                metadata: None,
+                files: USER | PROJECT,
             }),
             SettingsPageItem::SettingItem(SettingItem {
                 title: "Scan Symbolic Links",
@@ -5679,7 +5695,7 @@ fn panels_page() -> SettingsPage {
         ]
     }
 
-    fn terminal_panel_section() -> [SettingsPageItem; 4] {
+    fn terminal_panel_section() -> [SettingsPageItem; 5] {
         [
             SettingsPageItem::SectionHeader("Terminal Panel"),
             SettingsPageItem::SettingItem(SettingItem {
@@ -5691,6 +5707,25 @@ fn panels_page() -> SettingsPage {
                     pick: |settings_content| settings_content.terminal.as_ref()?.dock.as_ref(),
                     write: |settings_content, value, _| {
                         settings_content.terminal.get_or_insert_default().dock = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
+            }),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Starts Open",
+                description: "Whether the terminal panel should open on startup.",
+                field: Box::new(SettingField {
+                    organization_override: None,
+                    json_path: Some("terminal.starts_open"),
+                    pick: |settings_content| {
+                        settings_content.terminal.as_ref()?.starts_open.as_ref()
+                    },
+                    write: |settings_content, value, _| {
+                        settings_content
+                            .terminal
+                            .get_or_insert_default()
+                            .starts_open = value;
                     },
                 }),
                 metadata: None,
@@ -5955,7 +5990,7 @@ fn panels_page() -> SettingsPage {
         ]
     }
 
-    fn git_panel_section() -> [SettingsPageItem; 17] {
+    fn git_panel_section() -> [SettingsPageItem; 18] {
         [
             SettingsPageItem::SectionHeader("Git Panel"),
             SettingsPageItem::SettingItem(SettingItem {
@@ -5981,6 +6016,25 @@ fn panels_page() -> SettingsPage {
                     pick: |settings_content| settings_content.git_panel.as_ref()?.dock.as_ref(),
                     write: |settings_content, value, _| {
                         settings_content.git_panel.get_or_insert_default().dock = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
+            }),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Starts Open",
+                description: "Whether the git panel should open on startup.",
+                field: Box::new(SettingField {
+                    organization_override: None,
+                    json_path: Some("git_panel.starts_open"),
+                    pick: |settings_content| {
+                        settings_content.git_panel.as_ref()?.starts_open.as_ref()
+                    },
+                    write: |settings_content, value, _| {
+                        settings_content
+                            .git_panel
+                            .get_or_insert_default()
+                            .starts_open = value;
                     },
                 }),
                 metadata: None,

@@ -630,6 +630,19 @@ impl CompletionSource {
         }
     }
 
+    pub fn filter_text(&self) -> Option<&str> {
+        if let Self::Lsp { lsp_completion, .. } = self {
+            Some(
+                lsp_completion
+                    .filter_text
+                    .as_deref()
+                    .unwrap_or(lsp_completion.label.as_str()),
+            )
+        } else {
+            None
+        }
+    }
+
     pub fn lsp_completion(&self, apply_defaults: bool) -> Option<Cow<'_, lsp::CompletionItem>> {
         if let Self::Lsp {
             lsp_completion,
@@ -3947,6 +3960,8 @@ impl Project {
                 }),
                 Err(_) => {}
             },
+            SettingsObserverEvent::GlobalTasksUpdated(_)
+            | SettingsObserverEvent::GlobalDebugScenariosUpdated(_) => {}
         }
     }
 
@@ -4719,7 +4734,7 @@ impl Project {
         trigger: String,
         push_to_history: bool,
         cx: &mut Context<Self>,
-    ) -> Task<Result<Option<Transaction>>> {
+    ) -> Option<Task<Result<Option<Transaction>>>> {
         self.lsp_store.update(cx, |lsp_store, cx| {
             lsp_store.on_type_format(buffer, position, trigger, push_to_history, cx)
         })
@@ -6888,6 +6903,12 @@ impl Completion {
         self.source
             .lsp_completion(false)
             .map(|lsp_completion| lsp_completion.label.clone())
+    }
+
+    pub fn filter_text(&self) -> &str {
+        self.source
+            .filter_text()
+            .unwrap_or_else(|| self.label.filter_text())
     }
 
     /// A key that can be used to sort completions when displaying
